@@ -1,41 +1,31 @@
 /**
  * CyberAcademy SIEM Backend API
- * Node.js/Express Server
- * 
- * Installation:
- * npm init -y
- * npm install express cors dotenv pg jsonwebtoken
+ * Node.js/Express Server with Supabase
  */
 
 const express = require('express');
 const cors = require('cors');
 require('dotenv').config();
-const { Pool } = require('pg');
+const { createClient } = require('@supabase/supabase-js');
 
 const app = express();
-const PORT = process.env.PORT || 5000;
+const PORT = process.env.PORT || 3000;
 
 // ============================================================================
-// DATABASE CONNECTION
+// SUPABASE CLIENT
 // ============================================================================
 
-const pool = new Pool({
-    user: process.env.DB_USER || 'postgres',
-    host: process.env.DB_HOST || 'localhost',
-    database: process.env.DB_NAME || 'cyber_academy',
-    password: process.env.DB_PASSWORD || 'password',
-    port: process.env.DB_PORT || 5432,
-});
+const supabaseUrl = process.env.SUPABASE_URL || 'https://nxfjyntjcckrsldewhtc.supabase.co';
+const supabaseKey = process.env.SUPABASE_ANON_KEY;
 
-// Test connection
-pool.connect((err, client, release) => {
-    if (err) {
-        console.error('Database connection error:', err.stack);
-    } else {
-        console.log('✅ Connected to PostgreSQL');
-        release();
-    }
-});
+if (!supabaseKey) {
+    console.error('❌ Missing SUPABASE_ANON_KEY environment variable');
+    process.exit(1);
+}
+
+const supabase = createClient(supabaseUrl, supabaseKey);
+
+console.log(`✅ Connected to Supabase: ${supabaseUrl}`);
 
 // ============================================================================
 // MIDDLEWARE
@@ -51,124 +41,55 @@ app.use((req, res, next) => {
 });
 
 // ============================================================================
-// HELPER FUNCTIONS
-// ============================================================================
-
-/**
- * Execute alert rule logic on logs
- * Check if rule condition matches any logs
- */
-async function evaluateAlertRule(rule) {
-    try {
-        const condition = rule.condition;
-        let query = 'SELECT * FROM logs WHERE TRUE';
-        let params = [];
-
-        // Build WHERE clause based on rule condition
-        if (condition.log_type) {
-            query += ' AND log_type = $' + (params.length + 1);
-            params.push(condition.log_type);
-        }
-
-        if (condition.event_id) {
-            query += ' AND event_id = $' + (params.length + 1);
-            params.push(condition.event_id.toString());
-        }
-
-        if (condition.result) {
-            query += ' AND result = $' + (params.length + 1);
-            params.push(condition.result);
-        }
-
-        // Time window
-        const timeWindow = condition.time_window || 3600;
-        const sinceTime = new Date(Date.now() - timeWindow * 1000);
-        query += ' AND timestamp > $' + (params.length + 1);
-        params.push(sinceTime);
-
-        query += ' ORDER BY timestamp DESC LIMIT 1000';
-
-        const result = await pool.query(query, params);
-        const logs = result.rows;
-
-        // Check if threshold is met
-        if (logs.length >= (condition.threshold || 1)) {
-            // Alert triggered!
-            return {
-                triggered: true,
-                matched_count: logs.length,
-                matched_logs: logs.slice(0, 10) // Store top 10 matched logs
-            };
-        }
-
-        return { triggered: false, matched_count: logs.length };
-    } catch (err) {
-        console.error('Error evaluating rule:', err);
-        return { triggered: false, error: err.message };
-    }
-}
-
-// ============================================================================
 // API ENDPOINTS: LOGS
 // ============================================================================
 
 /**
  * GET /api/logs
  * Retrieve logs with filtering and pagination
- * 
- * Query params:
- * - from: start timestamp (ISO 8601)
- * - to: end timestamp (ISO 8601)
- * - log_type: FIREWALL, DC, DNS, IIS, VPN, WINDOWS_EVENT
- * - source_ip: filter by source IP
- * - severity: 1-10
- * - limit: number of logs (default 100)
- * - offset: pagination offset (default 0)
  */
 app.get('/api/logs', async (req, res) => {
     try {
         const { from, to, log_type, source_ip, severity, limit = 100, offset = 0 } = req.query;
-        
-        let query = 'SELECT * FROM logs WHERE 1=1';
-        let params = [];
+
+        let query = supabase.from('logs').select('*');
 
         // Filters
-        if (from) {
-            query += ' AND timestamp >= $' + (params.length + 1);
-            params.push(new Date(from));
-        }
-
-        if (to) {
-            query += ' AND timestamp <= $' + (params.length + 1);
-            params.push(new Date(to));
-        }
-
         if (log_type) {
-            query += ' AND log_type = $' + (params.length + 1);
-            params.push(log_type.toUpperCase());
+            query = query.eq('log_type', log_type.toUpperCase());
         }
 
         if (source_ip) {
-            query += ' AND source_ip::text = $' + (params.length + 1);
-            params.push(source_ip);
+            query = query.eq('source_ip', source_ip);
         }
 
         if (severity) {
-            query += ' AND severity >= $' + (params.length + 1);
-            params.push(parseInt(severity));
+            query = query.gte('severity', parseInt(severity));
         }
 
-        // Pagination
-        query += ' ORDER BY timestamp DESC';
-        query += ' LIMIT $' + (params.length + 1) + ' OFFSET $' + (params.length + 2);
-        params.push(parseInt(limit), parseInt(offset));
+        if (from) {
+            query = query.gte('timestamp', new Date(from).toISOString());
+        }
 
-        const result = await pool.query(query, params);
-        
+        if (to) {
+            query = query.lte('timestamp', new Date(to).toISOString());
+        }
+
+        // Pagination & Sorting
+        query = query.order('timestamp', { ascending: false })
+            .range(parseInt(offset), parseInt(offset) + parseInt(limit) - 1);
+
+        const { data, error, count } = await query;
+
+        if (error) {
+            return res.status(500).json({ success: false, error: error.message });
+        }
+
         res.json({
             success: true,
-            count: result.rows.length,
-            logs: result.rows
+            count: data ? data.length : 0,
+            total: count,
+            logs: data || []
         });
     } catch (err) {
         console.error('Error fetching logs:', err);
@@ -198,47 +119,42 @@ app.post('/api/logs', async (req, res) => {
             message
         } = req.body;
 
-        const query = `
-            INSERT INTO logs (
-                timestamp, log_type, source_ip, dest_ip, source_port, dest_port,
-                protocol, action, result, user_name, severity, raw_data, message
-            ) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13)
-            RETURNING *
-        `;
+        // Validate required fields
+        if (!log_type || !source_ip || !dest_ip) {
+            return res.status(400).json({
+                success: false,
+                error: 'Missing required fields: log_type, source_ip, dest_ip'
+            });
+        }
 
-        const result_data = await pool.query(query, [
-            new Date(timestamp),
-            log_type.toUpperCase(),
+        const logData = {
+            timestamp: timestamp ? new Date(timestamp).toISOString() : new Date().toISOString(),
+            log_type: log_type.toUpperCase(),
             source_ip,
             dest_ip,
-            source_port || null,
-            dest_port || null,
-            protocol || null,
-            action || null,
-            result || null,
-            user_name || null,
-            severity || 1,
-            raw_data || null,
-            message || null
-        ]);
+            source_port: source_port || null,
+            dest_port: dest_port || null,
+            protocol: protocol || null,
+            action: action || null,
+            result: result || null,
+            user_name: user_name || null,
+            severity: severity || 1,
+            raw_data: raw_data || null,
+            message: message || null
+        };
 
-        // Check alert rules
-        // (In production, use a background job/queue for this)
-        const rules = await pool.query('SELECT * FROM alert_rules WHERE enabled = true');
-        for (const rule of rules.rows) {
-            const evaluation = await evaluateAlertRule(rule);
-            if (evaluation.triggered) {
-                // Create alert
-                await pool.query(`
-                    INSERT INTO alerts (rule_id, severity, message, matched_logs_count, status)
-                    VALUES ($1, $2, $3, $4, $5)
-                `, [rule.id, rule.severity, `Rule '${rule.name}' triggered`, evaluation.matched_count, 'new']);
-            }
+        const { data, error } = await supabase
+            .from('logs')
+            .insert([logData])
+            .select();
+
+        if (error) {
+            return res.status(500).json({ success: false, error: error.message });
         }
 
         res.status(201).json({
             success: true,
-            log: result_data.rows[0]
+            log: data[0]
         });
     } catch (err) {
         console.error('Error inserting log:', err);
@@ -253,44 +169,39 @@ app.post('/api/logs', async (req, res) => {
 /**
  * GET /api/alerts
  * Retrieve active alerts with filtering
- * 
- * Query params:
- * - severity: critical, high, medium, low
- * - status: new, investigating, false_positive, confirmed, resolved
- * - rule_id: filter by specific rule
  */
 app.get('/api/alerts', async (req, res) => {
     try {
         const { severity, status, rule_id, limit = 50, offset = 0 } = req.query;
 
-        let query = 'SELECT * FROM alerts WHERE 1=1';
-        let params = [];
+        let query = supabase.from('alerts').select('*');
 
         if (severity) {
-            query += ' AND severity = $' + (params.length + 1);
-            params.push(severity.toLowerCase());
+            query = query.eq('severity', severity.toLowerCase());
         }
 
         if (status) {
-            query += ' AND status = $' + (params.length + 1);
-            params.push(status.toLowerCase());
+            query = query.eq('status', status.toLowerCase());
         }
 
         if (rule_id) {
-            query += ' AND rule_id = $' + (params.length + 1);
-            params.push(rule_id);
+            query = query.eq('rule_id', rule_id);
         }
 
-        query += ' ORDER BY triggered_at DESC';
-        query += ' LIMIT $' + (params.length + 1) + ' OFFSET $' + (params.length + 2);
-        params.push(parseInt(limit), parseInt(offset));
+        query = query.order('triggered_at', { ascending: false })
+            .range(parseInt(offset), parseInt(offset) + parseInt(limit) - 1);
 
-        const result = await pool.query(query, params);
+        const { data, error, count } = await query;
+
+        if (error) {
+            return res.status(500).json({ success: false, error: error.message });
+        }
 
         res.json({
             success: true,
-            count: result.rows.length,
-            alerts: result.rows
+            count: data ? data.length : 0,
+            total: count,
+            alerts: data || []
         });
     } catch (err) {
         console.error('Error fetching alerts:', err);
@@ -304,16 +215,14 @@ app.get('/api/alerts', async (req, res) => {
  */
 app.get('/api/alerts/summary', async (req, res) => {
     try {
-        const query = `
-            SELECT 
-                severity,
-                COUNT(*) as count
-            FROM alerts
-            WHERE status != 'resolved'
-            GROUP BY severity
-        `;
+        const { data, error } = await supabase
+            .from('alerts')
+            .select('severity', { count: 'exact' })
+            .neq('status', 'resolved');
 
-        const result = await pool.query(query);
+        if (error) {
+            return res.status(500).json({ success: false, error: error.message });
+        }
 
         const summary = {
             critical: 0,
@@ -322,8 +231,10 @@ app.get('/api/alerts/summary', async (req, res) => {
             low: 0
         };
 
-        result.rows.forEach(row => {
-            summary[row.severity] = parseInt(row.count);
+        data?.forEach(alert => {
+            if (alert.severity in summary) {
+                summary[alert.severity]++;
+            }
         });
 
         res.json({
@@ -345,45 +256,29 @@ app.patch('/api/alerts/:id', async (req, res) => {
         const { id } = req.params;
         const { status, assigned_to, notes } = req.body;
 
-        let query = 'UPDATE alerts SET ';
-        let params = [];
-        let setCount = 1;
+        const updateData = {};
+        if (status) updateData.status = status;
+        if (assigned_to) updateData.assigned_to = assigned_to;
+        if (notes) updateData.notes = notes;
+        if (status === 'resolved') updateData.resolved_at = new Date().toISOString();
 
-        if (status) {
-            query += `status = $${setCount++}`;
-            params.push(status);
+        const { data, error } = await supabase
+            .from('alerts')
+            .update(updateData)
+            .eq('id', id)
+            .select();
+
+        if (error) {
+            return res.status(500).json({ success: false, error: error.message });
         }
 
-        if (assigned_to) {
-            if (params.length > 0) query += ', ';
-            query += `assigned_to = $${setCount++}`;
-            params.push(assigned_to);
-        }
-
-        if (notes) {
-            if (params.length > 0) query += ', ';
-            query += `notes = $${setCount++}`;
-            params.push(notes);
-        }
-
-        if (status === 'resolved') {
-            if (params.length > 0) query += ', ';
-            query += `resolved_at = $${setCount++}`;
-            params.push(new Date());
-        }
-
-        query += ` WHERE id = $${setCount} RETURNING *`;
-        params.push(id);
-
-        const result = await pool.query(query, params);
-
-        if (result.rows.length === 0) {
+        if (!data || data.length === 0) {
             return res.status(404).json({ success: false, error: 'Alert not found' });
         }
 
         res.json({
             success: true,
-            alert: result.rows[0]
+            alert: data[0]
         });
     } catch (err) {
         console.error('Error updating alert:', err);
@@ -403,27 +298,29 @@ app.get('/api/rules', async (req, res) => {
     try {
         const { enabled, category } = req.query;
 
-        let query = 'SELECT * FROM alert_rules WHERE 1=1';
-        let params = [];
+        let query = supabase.from('alert_rules').select('*');
 
         if (enabled !== undefined) {
-            query += ' AND enabled = $' + (params.length + 1);
-            params.push(enabled === 'true');
+            query = query.eq('enabled', enabled === 'true');
         }
 
         if (category) {
-            query += ' AND category = $' + (params.length + 1);
-            params.push(category);
+            query = query.eq('category', category);
         }
 
-        query += ' ORDER BY severity DESC, name ASC';
+        query = query.order('severity', { ascending: false })
+            .order('name', { ascending: true });
 
-        const result = await pool.query(query, params);
+        const { data, error } = await query;
+
+        if (error) {
+            return res.status(500).json({ success: false, error: error.message });
+        }
 
         res.json({
             success: true,
-            count: result.rows.length,
-            rules: result.rows
+            count: data ? data.length : 0,
+            rules: data || []
         });
     } catch (err) {
         console.error('Error fetching rules:', err);
@@ -440,31 +337,32 @@ app.post('/api/rules', async (req, res) => {
         const { name, description, log_type, condition, severity, category, created_by } = req.body;
 
         if (!name || !log_type || !condition || !severity) {
-            return res.status(400).json({ 
-                success: false, 
-                error: 'Missing required fields: name, log_type, condition, severity' 
+            return res.status(400).json({
+                success: false,
+                error: 'Missing required fields: name, log_type, condition, severity'
             });
         }
 
-        const query = `
-            INSERT INTO alert_rules (name, description, log_type, condition, severity, category, created_by)
-            VALUES ($1, $2, $3, $4, $5, $6, $7)
-            RETURNING *
-        `;
+        const { data, error } = await supabase
+            .from('alert_rules')
+            .insert([{
+                name,
+                description: description || null,
+                log_type: log_type.toUpperCase(),
+                condition,
+                severity: severity.toLowerCase(),
+                category: category || null,
+                created_by: created_by || 'api'
+            }])
+            .select();
 
-        const result = await pool.query(query, [
-            name,
-            description || null,
-            log_type.toUpperCase(),
-            condition,
-            severity.toLowerCase(),
-            category || null,
-            created_by || 'api'
-        ]);
+        if (error) {
+            return res.status(500).json({ success: false, error: error.message });
+        }
 
         res.status(201).json({
             success: true,
-            rule: result.rows[0]
+            rule: data[0]
         });
     } catch (err) {
         console.error('Error creating rule:', err);
@@ -484,27 +382,30 @@ app.get('/api/labs', async (req, res) => {
     try {
         const { difficulty, published } = req.query;
 
-        let query = 'SELECT id, title, description, difficulty, max_score, created_at FROM labs WHERE 1=1';
-        let params = [];
+        let query = supabase
+            .from('labs')
+            .select('id, title, description, difficulty, max_score, created_at');
 
         if (difficulty) {
-            query += ' AND difficulty = $' + (params.length + 1);
-            params.push(difficulty);
+            query = query.eq('difficulty', difficulty);
         }
 
         if (published !== undefined) {
-            query += ' AND published = $' + (params.length + 1);
-            params.push(published === 'true');
+            query = query.eq('published', published === 'true');
         }
 
-        query += ' ORDER BY created_at DESC';
+        query = query.order('created_at', { ascending: false });
 
-        const result = await pool.query(query, params);
+        const { data, error } = await query;
+
+        if (error) {
+            return res.status(500).json({ success: false, error: error.message });
+        }
 
         res.json({
             success: true,
-            count: result.rows.length,
-            labs: result.rows
+            count: data ? data.length : 0,
+            labs: data || []
         });
     } catch (err) {
         console.error('Error fetching labs:', err);
@@ -520,16 +421,19 @@ app.get('/api/labs/:id', async (req, res) => {
     try {
         const { id } = req.params;
 
-        const query = 'SELECT * FROM labs WHERE id = $1';
-        const result = await pool.query(query, [id]);
+        const { data, error } = await supabase
+            .from('labs')
+            .select('*')
+            .eq('id', id)
+            .single();
 
-        if (result.rows.length === 0) {
+        if (error || !data) {
             return res.status(404).json({ success: false, error: 'Lab not found' });
         }
 
         res.json({
             success: true,
-            lab: result.rows[0]
+            lab: data
         });
     } catch (err) {
         console.error('Error fetching lab:', err);
@@ -550,17 +454,21 @@ app.post('/api/labs/:id/start', async (req, res) => {
             return res.status(400).json({ success: false, error: 'user_id required' });
         }
 
-        const query = `
-            INSERT INTO lab_instances (lab_id, user_id)
-            VALUES ($1, $2)
-            RETURNING *
-        `;
+        const { data, error } = await supabase
+            .from('lab_instances')
+            .insert([{
+                lab_id: id,
+                user_id
+            }])
+            .select();
 
-        const result = await pool.query(query, [id, user_id]);
+        if (error) {
+            return res.status(500).json({ success: false, error: error.message });
+        }
 
         res.status(201).json({
             success: true,
-            instance: result.rows[0]
+            instance: data[0]
         });
     } catch (err) {
         console.error('Error starting lab:', err);
@@ -573,7 +481,11 @@ app.post('/api/labs/:id/start', async (req, res) => {
 // ============================================================================
 
 app.get('/health', (req, res) => {
-    res.json({ status: 'ok', timestamp: new Date().toISOString() });
+    res.json({
+        status: 'ok',
+        timestamp: new Date().toISOString(),
+        supabase: supabaseUrl
+    });
 });
 
 // ============================================================================
@@ -585,6 +497,7 @@ app.listen(PORT, () => {
     ╔════════════════════════════════════╗
     ║  CyberAcademy SIEM API Server      ║
     ║  Listening on http://localhost:${PORT}  ║
+    ║  Database: Supabase                ║
     ╚════════════════════════════════════╝
     `);
 });
@@ -592,6 +505,5 @@ app.listen(PORT, () => {
 // Graceful shutdown
 process.on('SIGINT', () => {
     console.log('\nShutting down gracefully...');
-    pool.end();
     process.exit(0);
 });
