@@ -28,16 +28,7 @@ if (supabaseKey) {
 // DASHBOARD ROUTE
 // ============================================================================
 
-app.get('/', (req, res) => {
-    try {
-        console.log('✅ GET / handler called');
-        res.setHeader('Content-Type', 'text/plain');
-        res.status(200).send('OK - CyberAcademy SIEM Dashboard');
-    } catch (err) {
-        console.error('❌ Error in GET /:', err);
-        res.status(500).send('Error');
-    }
-});
+app.get('/', (req, res) => res.send('OK'));
 
 // ============================================================================
 // API: LOGS
