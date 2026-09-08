@@ -29,7 +29,14 @@ if (supabaseKey) {
 // ============================================================================
 
 app.get('/', (req, res) => {
-    res.send('CyberAcademy SIEM Dashboard - OK');
+    try {
+        console.log('✅ GET / handler called');
+        res.setHeader('Content-Type', 'text/plain');
+        res.status(200).send('OK - CyberAcademy SIEM Dashboard');
+    } catch (err) {
+        console.error('❌ Error in GET /:', err);
+        res.status(500).send('Error');
+    }
 });
 
 // ============================================================================
@@ -225,10 +232,16 @@ app.get('/health', (req, res) => {
 });
 
 // ============================================================================
-// ERROR HANDLER
+// ERROR HANDLER (must be last)
 // ============================================================================
 
+app.use((err, req, res, next) => {
+    console.error('❌ Global error handler:', err);
+    res.status(500).json({ error: 'Internal server error', message: err.message });
+});
+
 app.use((req, res) => {
+    console.log('❌ 404 Not Found:', req.path);
     res.status(404).json({ success: false, error: 'Not found' });
 });
 
