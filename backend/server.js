@@ -18,14 +18,18 @@ const PORT = process.env.PORT || 3000;
 const supabaseUrl = process.env.SUPABASE_URL || 'https://nxfjyntjcckrsldewhtc.supabase.co';
 const supabaseKey = process.env.SUPABASE_ANON_KEY;
 
-if (!supabaseKey) {
-    console.error('❌ Missing SUPABASE_ANON_KEY environment variable');
-    process.exit(1);
+let supabase = null;
+
+if (supabaseKey) {
+    try {
+        supabase = createClient(supabaseUrl, supabaseKey);
+        console.log(`✅ Connected to Supabase: ${supabaseUrl}`);
+    } catch (err) {
+        console.warn(`⚠️ Supabase connection warning: ${err.message}`);
+    }
+} else {
+    console.warn('⚠️ SUPABASE_ANON_KEY not set - API endpoints will fail');
 }
-
-const supabase = createClient(supabaseUrl, supabaseKey);
-
-console.log(`✅ Connected to Supabase: ${supabaseUrl}`);
 
 // ============================================================================
 // MIDDLEWARE
@@ -60,6 +64,10 @@ app.get('/', (req, res) => {
  */
 app.get('/api/logs', async (req, res) => {
     try {
+        if (!supabase) {
+            return res.status(503).json({ success: false, error: 'Database not available' });
+        }
+
         const { from, to, log_type, source_ip, severity, limit = 100, offset = 0 } = req.query;
 
         let query = supabase.from('logs').select('*');
