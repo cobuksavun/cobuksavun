@@ -5,6 +5,7 @@
 
 const express = require('express');
 const cors = require('cors');
+const path = require('path');
 require('dotenv').config();
 const { createClient } = require('@supabase/supabase-js');
 
@@ -480,7 +481,15 @@ app.post('/api/labs/:id/start', async (req, res) => {
 // DASHBOARD & STATIC FILES
 // ============================================================================
 
-const path = require('path');
+app.use(express.static(path.join(__dirname)));
+
+app.get('/', (req, res) => {
+    res.sendFile(path.join(__dirname, 'dashboard.html'));
+});
+
+// ============================================================================
+// DASHBOARD & STATIC FILES
+// ============================================================================
 
 app.use(express.static(path.join(__dirname)));
 
